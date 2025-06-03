@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tube Magic Helper - Lightweight console YouTube AI assistant
+Tube Wizard - Lightweight console YouTube AI assistant
 """
 import os
 import sys
@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.table import Table
 from rich import print as rprint
 from dotenv import load_dotenv
 import openai
@@ -20,13 +21,15 @@ from pathlib import Path
 import requests
 import math
 import urllib.parse
+import re
+from collections import defaultdict
 
 # Load environment variables
 load_dotenv()
 
 # Initialize console
 console = Console()
-app = typer.Typer(help="Tube Magic Helper - YouTube AI Assistant")
+app = typer.Typer(help="Tube Wizard - YouTube AI Assistant")
 
 # Configuration
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
@@ -287,8 +290,16 @@ def optimize_metadata(topic: str, script: str | None = None):
 
 # --- Keyword research helpers ---
 
-def _keyword_suggestions(keyword: str, max_suggestions: int = 5) -> list[str]:
-    """Return related long-tail keywords using YouTube autosuggest."""
+def _keyword_suggestions(keyword: str, max_suggestions: int = 10) -> list[str]:
+    """Return related long-tail keywords using YouTube autosuggest.
+    
+    Args:
+        keyword: The seed keyword to get suggestions for
+        max_suggestions: Maximum number of suggestions to return
+        
+    Returns:
+        List of suggested keywords (lowercase)
+    """
     try:
         url = (
             "https://suggestqueries.google.com/complete/search?" +
@@ -296,31 +307,87 @@ def _keyword_suggestions(keyword: str, max_suggestions: int = 5) -> list[str]:
         )
         resp = requests.get(url, timeout=4)
         data = resp.json()
-        # data[1] is list of suggestions
-        return [s.lower() for s in data[1][:max_suggestions]]
-    except Exception:
+        # data[1] is list of suggestions, remove duplicates
+        seen = set()
+        suggestions = []
+        for s in data[1]:
+            s_lower = s.lower()
+            if s_lower not in seen and s_lower != keyword.lower():
+                seen.add(s_lower)
+                suggestions.append(s_lower)
+                if len(suggestions) >= max_suggestions:
+                    break
+        return suggestions
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not get suggestions for '{keyword}': {e}[/yellow]")
         return []
 
 
+def _parse_duration(duration_str):
+    """Parse ISO 8601 duration format (PT1H2M3S) to minutes."""
+    duration_regex = re.compile(r'PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?')
+    match = duration_regex.match(duration_str)
+    if not match:
+        return 0
+    
+    parts = match.groupdict()
+    hours = int(parts.get('hours', 0) or 0)
+    minutes = int(parts.get('minutes', 0) or 0)
+    seconds = int(parts.get('seconds', 0) or 0)
+    
+    return hours * 60 + minutes + seconds / 60
+
+def _categorize_keyword(keyword, channel_data, category_data):
+    """Categorize a keyword as channel-specific, category-specific, or video-specific."""
+    if keyword.lower() in channel_data:
+        return "channel"
+    elif keyword.lower() in category_data:
+        return "category"
+    else:
+        return "video"
+
 def _keyword_stats(keyword: str, max_videos: int = 50):
-    """Compute stats for a keyword using up-to-`max_videos` top-viewed results."""
+    """Compute stats for a keyword using up-to-`max_videos` top-viewed results.
+    
+    Implements the Magic Score formula: M = V/C where:
+    - V = Search volume (views)
+    - C = Competition level
+    """
     if not youtube_client:
         return None
 
-    # ── get total result count (competition) ──
+    # Get total result count (competition)
     try:
         meta_resp = youtube_client.search().list(
             q=keyword,
-            part="id",
+            part="id,snippet",
             type="video",
             maxResults=1,
         ).execute()
         competition = meta_resp.get("pageInfo", {}).get("totalResults", 0)
+        
+        # Get channel and category info for categorization
+        channel_info = None
+        category_id = None
+        if meta_resp.get("items"):
+            channel_info = meta_resp["items"][0]["snippet"].get("channelTitle")
+            video_id = meta_resp["items"][0]["id"].get("videoId")
+            if video_id:
+                try:
+                    video_resp = youtube_client.videos().list(
+                        id=video_id,
+                        part="snippet"
+                    ).execute()
+                    if video_resp.get("items"):
+                        category_id = video_resp["items"][0]["snippet"].get("categoryId")
+                except Exception:
+                    pass
+            
     except Exception as e:
         console.print(f"[red]Keyword meta error for '{keyword}': {e}[/red]")
         return None
 
-    # ── collect IDs ordered by viewCount ──
+    # Collect IDs ordered by viewCount
     video_ids = []
     page_token = None
     while len(video_ids) < max_videos:
@@ -344,57 +411,151 @@ def _keyword_stats(keyword: str, max_videos: int = 50):
     if not video_ids:
         return None
 
-    # ── total & average views for collected videos ──
+    # Calculate total & average views, likes, comments for collected videos
     total_views = 0
+    total_likes = 0
+    total_comments = 0
+    total_duration = 0
     for i in range(0, len(video_ids), 50):
         try:
             vids_resp = youtube_client.videos().list(
                 id=",".join(video_ids[i : i + 50]),
-                part="statistics",
+                part="statistics,contentDetails",
             ).execute()
-            total_views += sum(int(v["statistics"].get("viewCount", 0)) for v in vids_resp.get("items", []))
+            
+            for v in vids_resp.get("items", []):
+                stats = v.get("statistics", {})
+                total_views += int(stats.get("viewCount", 0))
+                total_likes += int(stats.get("likeCount", 0))
+                total_comments += int(stats.get("commentCount", 0))
+                
+                # Calculate duration
+                duration_str = v.get("contentDetails", {}).get("duration", "PT0M0S")
+                duration_minutes = _parse_duration(duration_str)
+                total_duration += duration_minutes
+                
         except Exception as e:
             console.print(f"[red]Stats error for '{keyword}': {e}[/red]")
 
-    avg_views = total_views / max(len(video_ids), 1)
-    # Normalised competition (0..1). YouTube caps totalResults at 1,000,000.
+    video_count = len(video_ids)
+    avg_views = total_views / max(video_count, 1)
+    avg_likes = total_likes / max(video_count, 1)
+    avg_comments = total_comments / max(video_count, 1)
+    avg_duration = total_duration / max(video_count, 1)
+    
+    # Calculate engagement rate (likes + comments per view)
+    engagement_rate = ((total_likes + total_comments) / total_views * 100) if total_views > 0 else 0
+    
+    # Normalize competition (0..1). YouTube caps totalResults at 1,000,000.
     competition_norm = min(competition, 1_000_000) / 1_000_000
 
-    # Composite score: favour high avg views & low competition.
-    score = avg_views / (1 + competition_norm * 1_000_000)
+    # Calculate Magic Score (M = V/C)
+    magic_score = avg_views / (competition_norm * 1_000_000 + 1)
 
     # Human-friendly competition label
-    competition_display = f"{competition:,}" if competition < 1_000_000 else "1M+"
+    if competition < 1000:
+        competition_display = str(competition)
+    elif competition < 1_000_000:
+        competition_display = f"{competition/1000:.1f}K"
+    else:
+        competition_display = f"{competition/1_000_000:.1f}M"
+    
+    # Determine keyword type
+    keyword_type = "video"
+    if channel_info:
+        keyword_type = "channel"
+    elif category_id:
+        keyword_type = "category"
 
     return {
         "keyword": keyword,
         "views": total_views,
         "avg_views": round(avg_views),
+        "avg_likes": round(avg_likes),
+        "avg_comments": round(avg_comments),
+        "avg_duration": round(avg_duration, 1),
+        "engagement_rate": round(engagement_rate, 2),
         "competition": competition_display,
-        "competition_norm": competition_norm,
-        "score": round(score, 2),
+        "competition_raw": competition,
+        "competition_norm": round(competition_norm, 3),
+        "magic_score": round(magic_score, 2),
+        "keyword_type": keyword_type,
+        "channel_info": channel_info,
+        "category_id": category_id
     }
 
 
-def keyword_research(seed_keywords: list[str], limit: int = 10):
-    """Keyword research with autosuggest expansion and improved scoring."""
+def keyword_research(seed_keywords: list[str], limit: int = 10, max_suggestions: int = 5):
+    """Keyword research with autosuggest expansion and Magic Score calculation.
+    
+    Implements the 'secret keyword process' with:
+    - Seed keyword expansion via YouTube autosuggest
+    - Magic Score calculation (M = V/C)
+    - Keyword categorization (channel, category, video specific)
+    
+    Args:
+        seed_keywords: Initial keywords to research
+        limit: Maximum number of results to return
+        max_suggestions: Maximum suggestions to get per seed keyword
+        
+    Returns:
+        Dictionary with all keywords and categorized results
+    """
     if not youtube_client:
         console.print("[red]YouTube API key required for keyword research.[/red]")
-        return []
+        return {}
 
-    all_keywords: set[str] = {kw.lower() for kw in seed_keywords}
+    # Step 1: Collect all keywords (seeds + suggestions)
+    all_keywords = set()
     for kw in seed_keywords:
-        all_keywords.update(_keyword_suggestions(kw))
+        kw_lower = kw.lower().strip()
+        all_keywords.add(kw_lower)
+        suggestions = _keyword_suggestions(kw_lower, max_suggestions)
+        all_keywords.update(suggestions)
 
+    console.print(f"[green]Found {len(all_keywords)} keywords to analyze[/green]")
+    
+    # Step 2: Analyze each keyword
     results = []
-    for kw in all_keywords:
-        stats = _keyword_stats(kw)
-        if stats:
-            results.append(stats)
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-    # Trim and return
-    return results[:limit]
+    with console.status("[bold blue]Analyzing keywords...[/bold blue]") as status:
+        for i, kw in enumerate(all_keywords, 1):
+            status.update(f"[bold blue]Analyzing keywords... [{i}/{len(all_keywords)}][/bold blue]")
+            stats = _keyword_stats(kw)
+            if stats:
+                results.append(stats)
+    
+    # Step 3: Sort by Magic Score
+    results.sort(key=lambda x: x["magic_score"], reverse=True)
+    
+    # Step 4: Categorize keywords
+    categorized = {
+        "channel_specific": [],
+        "category_specific": {},
+        "video_specific": []
+    }
+    
+    for kw_data in results:
+        if kw_data["keyword_type"] == "channel" and kw_data["channel_info"]:
+            categorized["channel_specific"].append(kw_data)
+        elif kw_data["keyword_type"] == "category" and kw_data["category_id"]:
+            category_id = kw_data["category_id"]
+            if category_id not in categorized["category_specific"]:
+                categorized["category_specific"][category_id] = []
+            categorized["category_specific"][category_id].append(kw_data)
+        else:
+            categorized["video_specific"].append(kw_data)
+    
+    # Return all results and categorized data
+    return {
+        "all_keywords": results[:limit],
+        "categorized": categorized,
+        "stats": {
+            "total": len(results),
+            "channel_specific": len(categorized["channel_specific"]),
+            "category_specific": sum(len(v) for v in categorized["category_specific"].values()),
+            "video_specific": len(categorized["video_specific"])
+        }
+    }
 
 
 @app.command("analyze")
@@ -534,59 +695,145 @@ def script_cmd(
 
 @app.command("optimize")
 def optimize_cmd(
-    topic: str = typer.Argument(..., help="Video topic/title"),
-    script_file: str = typer.Option(None, "--script-file", "-s", help="Path to a script file for context")
+    title: str = typer.Argument(..., help="Current video title"),
+    description: str = typer.Option(None, "--desc", "-d", help="Current video description"),
+    tags: str = typer.Option(None, "--tags", "-t", help="Current video tags (comma-separated)"),
+    niche: str = typer.Option(None, "--niche", "-n", help="Video niche/topic")
 ):
-    """Generate SEO-optimised metadata for a video."""
+    """Optimize video metadata (title, description, tags) for SEO."""
     if not check_api_keys():
         return
-    script_content = None
-    if script_file and os.path.exists(script_file):
-        script_content = Path(script_file).read_text()
-    console.status("[bold blue]Generating metadata...[/bold blue]")
-    meta = optimize_metadata(topic, script_content)
-    if not meta:
+    
+    # Prepare current metadata
+    current_metadata = {
+        "title": title,
+        "description": description or "",
+        "tags": tags.split(",") if tags else []
+    }
+    
+    with console.status("[bold blue]Optimizing metadata...[/bold blue]"):
+        optimized = optimize_metadata(current_metadata, niche)
+    
+    if not optimized:
         return
-    if "raw" in meta:
-        display_ai_analysis(meta["raw"], "Metadata (raw)")
-    else:
-        tags_line = ", ".join(meta.get("tags", []))
-        meta_text = (
-            f"**Title:** {meta['title']}\n\n"
-            f"**Description:**\n{meta['description']}\n\n"
-            f"**Tags:** {tags_line}"
+    
+    # Display optimized metadata
+    console.print(Panel("[bold]Optimized Video Metadata[/bold]", border_style="green"))
+    
+    console.print("[bold blue]Title:[/bold blue]")
+    console.print(Markdown(f"# {optimized['title']}\n"))
+    
+    console.print("[bold blue]Description:[/bold blue]")
+    console.print(Markdown(optimized['description']))
+    
+    console.print("[bold blue]Tags:[/bold blue]")
+    tags_text = ", ".join(optimized['tags'])
+    console.print(f"[green]{tags_text}[/green]")
+    
+    # Save optimized metadata to file
+    metadata_dir = data_dir / "metadata"
+    metadata_dir.mkdir(exist_ok=True)
+    
+    filename = f"optimized_{title[:30].replace(' ', '_')}.json"
+    with open(metadata_dir / filename, "w") as f:
+        json.dump(optimized, f, indent=2)
+    
+    console.print(f"\n[green]Optimized metadata saved to {metadata_dir / filename}[/green]")
+
+
+@app.command("keywords")
+def keywords_cmd(
+    keywords: list[str] = typer.Argument(..., help="Seed keywords to research"),
+    limit: int = typer.Option(10, "--limit", "-l", help="Maximum number of results"),
+    suggestions: int = typer.Option(5, "--suggestions", "-s", help="Maximum suggestions per keyword"),
+    export: bool = typer.Option(False, "--export", "-e", help="Export results to files"),
+    format: str = typer.Option("both", "--format", "-f", help="Export format: txt, csv, or both")
+):
+    """Research keywords with YouTube autosuggest and Magic Score."""
+    if not YOUTUBE_API_KEY:
+        console.print("[red]YouTube API key required for keyword research.[/red]")
+        return
+    
+    with console.status(f"[bold blue]Researching {len(keywords)} seed keywords...[/bold blue]"):
+        results = keyword_research(keywords, limit, suggestions)
+    
+    if not results or not results.get("all_keywords"):
+        console.print("[yellow]No keyword results found.[/yellow]")
+        return
+    
+    # Display results in a table
+    table = Table(title=f"Keyword Research Results (Top {limit})")
+    table.add_column("Keyword", style="cyan")
+    table.add_column("Magic Score", justify="right", style="green")
+    table.add_column("Avg Views", justify="right")
+    table.add_column("Competition", justify="right")
+    table.add_column("Type", style="magenta")
+    
+    for kw in results["all_keywords"]:
+        table.add_row(
+            kw["keyword"],
+            str(kw["magic_score"]),
+            f"{kw['avg_views']:,}",
+            kw["competition"],
+            kw["keyword_type"]
         )
-        display_ai_analysis(meta_text, "Optimised Metadata")
-
-
-@app.command("research")
-def research_cmd(
-    keywords: str = typer.Argument(..., help="Comma-separated seed keywords"),
-    limit: int = typer.Option(10, "--limit", "-l", help="Number of top keywords to return")
-):
-    """Perform keyword research based on seed keywords."""
-    if not check_api_keys():
-        return
-    kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
-    console.status("[bold blue]Researching keywords...[/bold blue]")
-    results = keyword_research(kw_list, limit)
-    if not results:
-        return
-    table_lines = [
-        f"{r['keyword']}: Views={r['views']}, AvgViews={r['avg_views']}, Competition={r['competition']}, Score={r['score']}" for r in results
-    ]
-    display_ai_analysis("\n".join(table_lines), "Keyword Research Results")
-
-
-@app.callback()
-def main():
-    """Tube Magic Helper - Lightweight console YouTube AI assistant."""
-    console.print(Panel.fit(
-        "[bold blue]Tube Magic Helper[/bold blue]\n"
-        "[italic]Lightweight console YouTube AI assistant[/italic]",
-        border_style="blue"
-    ))
+    
+    console.print(table)
+    
+    # Display stats
+    stats = results["stats"]
+    console.print(f"\n[bold]Total Keywords:[/bold] {stats['total']}")
+    console.print(f"[bold]Channel-specific:[/bold] {stats['channel_specific']}")
+    console.print(f"[bold]Category-specific:[/bold] {stats['category_specific']}")
+    console.print(f"[bold]Video-specific:[/bold] {stats['video_specific']}")
+    
+    # Export if requested
+    if export:
+        keywords_dir = data_dir / "keywords"
+        keywords_dir.mkdir(exist_ok=True)
+        
+        # Create filename from seed keywords
+        seed_text = "_".join(k.replace(" ", "") for k in keywords[:2])
+        if len(keywords) > 2:
+            seed_text += "_etc"
+        
+        if format in ["txt", "both"]:
+            # Export to text file
+            with open(keywords_dir / f"{seed_text}.txt", "w") as f:
+                f.write(f"Tube Wizard Keyword Research Results\n")
+                f.write(f"Seed Keywords: {', '.join(keywords)}\n\n")
+                
+                f.write("Top Keywords by Magic Score:\n")
+                for i, kw in enumerate(results["all_keywords"], 1):
+                    f.write(f"{i}. {kw['keyword']} - Score: {kw['magic_score']} - Views: {kw['avg_views']} - Competition: {kw['competition']}\n")
+                
+                f.write("\nStats:\n")
+                for k, v in stats.items():
+                    f.write(f"{k.replace('_', ' ').title()}: {v}\n")
+            
+            console.print(f"[green]Exported to {keywords_dir / f'{seed_text}.txt'}[/green]")
+        
+        if format in ["csv", "both"]:
+            # Export to CSV file
+            with open(keywords_dir / f"{seed_text}.csv", "w", newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Keyword", "Magic Score", "Avg Views", "Competition", "Type"])
+                for kw in results["all_keywords"]:
+                    writer.writerow([kw["keyword"], kw["magic_score"], kw["avg_views"], kw["competition"], kw["keyword_type"]])
+            
+            console.print(f"[green]Exported to {keywords_dir / f'{seed_text}.csv'}[/green]")
 
 
 if __name__ == "__main__":
+    # Create data directory if it doesn't exist
+    data_dir.mkdir(exist_ok=True)
+    
+    # Show welcome message
+    console.print(Panel.fit(
+        "[bold blue]Tube Wizard[/bold blue] - YouTube AI Assistant\n" +
+        "[italic]Your AI-powered YouTube companion for content creation and optimization[/italic]",
+        border_style="green"
+    ))
+    
+    # Run the app
     app()

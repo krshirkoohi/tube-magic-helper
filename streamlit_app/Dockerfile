@@ -1,4 +1,4 @@
-# Streamlit Tube Magic Helper Dockerfile
+# Streamlit YouTube SEO Helper Dockerfile
 FROM python:3.11-slim
 
 # Install OS deps

@@ -1,6 +1,6 @@
-# Tube Magic Helper – Streamlit Version
+# YouTube SEO Helper – Streamlit Version
 
-This folder contains a lightweight Streamlit web application wrapping the core Tube Magic Helper CLI functionality.
+This folder contains a lightweight Streamlit web application wrapping the core YouTube SEO Helper CLI functionality.
 
 ## Quickstart (local)
 

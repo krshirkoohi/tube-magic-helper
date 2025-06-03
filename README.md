@@ -1,6 +1,6 @@
-# Tube Magic Helper
+# Tube Wizard
 
-Open source lightweight console YouTube AI assistant similar to Tube Magic.
+Open source lightweight console YouTube AI assistant for content creators.
 
 ## Features
 
@@ -13,8 +13,8 @@ Open source lightweight console YouTube AI assistant similar to Tube Magic.
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/tube-magic-helper.git
-   cd tube-magic-helper
+   git clone https://github.com/krshirkoohi/tube-wizard.git
+   cd tube-wizard
    ```
 
 2. Install the required dependencies:
@@ -40,7 +40,7 @@ This application requires two API keys:
 ### Analyze a YouTube video
 
 ```bash
-python tube_magic_helper.py analyze https://www.youtube.com/watch?v=VIDEO_ID
+python tube_wizard.py analyze https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
 Options:
@@ -51,11 +51,52 @@ Options:
 ### Search for YouTube videos
 
 ```bash
-python tube_magic_helper.py search "your search query"
+python tube_wizard.py search "your search query"
 ```
 
 Options:
 - `--max` / `-m`: Maximum number of results (default: 5)
+
+### Generate video ideas
+
+```bash
+python tube_wizard.py ideas "your niche or topic"
+```
+
+Options:
+- `--num` / `-n`: Number of ideas to generate (default: 10)
+
+### Generate a video script
+
+```bash
+python tube_wizard.py script "your video title or topic"
+```
+
+Options:
+- `--minutes` / `-m`: Approximate length of the video in minutes (default: 5)
+
+### Optimize video metadata for SEO
+
+```bash
+python tube_wizard.py optimize "your video title" --desc "your description" --tags "tag1,tag2,tag3" --niche "your niche"
+```
+
+Options:
+- `--desc` / `-d`: Current video description (optional)
+- `--tags` / `-t`: Current video tags, comma-separated (optional)
+- `--niche` / `-n`: Video niche/topic (optional)
+
+### Research keywords
+
+```bash
+python tube_wizard.py keywords "keyword1" "keyword2" "keyword3"
+```
+
+Options:
+- `--limit` / `-l`: Maximum number of results to return (default: 10)
+- `--suggestions` / `-s`: Maximum suggestions per keyword (default: 5)
+- `--export` / `-e`: Export results to files (default: false)
+- `--format` / `-f`: Export format: txt, csv, or both (default: both)
 
 ## License
 

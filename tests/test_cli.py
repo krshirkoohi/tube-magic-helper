@@ -1,4 +1,4 @@
-"""Basic unit tests for the Tube Magic Helper CLI functions.
+"""Basic unit tests for the YouTube SEO Helper CLI functions.
 Run with: pytest -q
 """
 import os
@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(PROJECT_ROOT))
 
-cli = importlib.import_module("tube_magic_helper")
+cli = importlib.import_module("youtube_seo_helper")
 
 # -----------------------------------------------------------------------------
 # Fixtures
