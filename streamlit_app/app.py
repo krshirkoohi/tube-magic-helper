@@ -1154,7 +1154,7 @@ Description: {video_info['description']}
                     with col1:
                         thumbnail_url = snippet.get("thumbnails", {}).get("high", {}).get("url", "")
                         if thumbnail_url:
-                            st.image(thumbnail_url, use_column_width=True)
+                            st.image(thumbnail_url, use_container_width=True)
                     
                     with col2:
                         st.markdown(f"**Channel:** {snippet.get('channelTitle', 'Unknown')}")
@@ -1681,7 +1681,7 @@ elif MODE == "Basic Keyword Research":
                         with col1:
                             thumbnail_url = snippet.get("thumbnails", {}).get("medium", {}).get("url", "")
                             if thumbnail_url:
-                                st.image(thumbnail_url, use_column_width=True)
+                                st.image(thumbnail_url, use_container_width=True)
                         
                         with col2:
                             st.markdown(f"**{i}. {snippet.get('title', 'No title')}**")
