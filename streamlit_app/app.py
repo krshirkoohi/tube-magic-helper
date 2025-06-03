@@ -1614,7 +1614,7 @@ elif MODE == "Basic Keyword Research":
                     
                     if not cache_hit:
                         # Get keyword suggestions
-                        suggestions = get_keyword_suggestions(keyword)
+                        suggestions = keyword_suggestions(keyword)
                         
                         # Get search results for the keyword
                         search_request = youtube_client.search().list(
